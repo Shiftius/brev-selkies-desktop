@@ -155,6 +155,37 @@ nvidia_runtime_ready() {
     && nvidia-container-cli info >/dev/null 2>&1
 }
 
+nvidia_accelerator_summary() {
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi -L 2>/dev/null | paste -sd '; ' -
+  fi
+}
+
+log_acceleration_resolution() {
+  local acceleration="$1"
+  local accelerator_summary
+
+  log "Selkies acceleration requested: ${SELKIES_ACCELERATION}; resolved: ${acceleration}"
+  if [[ "$acceleration" == "hardware" ]]; then
+    accelerator_summary="$(nvidia_accelerator_summary)"
+    if [[ -n "$accelerator_summary" ]]; then
+      log "Detected NVIDIA hardware accelerator(s): ${accelerator_summary}"
+    else
+      log "Detected NVIDIA hardware accelerator(s): <nvidia-smi unavailable despite hardware mode>"
+    fi
+    log "NVIDIA container runtime: available"
+    if [[ "$SELKIES_ACCELERATION" == "auto" ]]; then
+      log "Hardware acceleration selected because auto mode found a healthy NVIDIA GPU and NVIDIA container runtime."
+    else
+      log "Hardware acceleration selected because SELKIES_ACCELERATION=hardware was requested and prerequisites passed."
+    fi
+  elif [[ "$SELKIES_ACCELERATION" == "auto" ]]; then
+    log "Software acceleration selected because auto mode did not find both a healthy NVIDIA GPU and NVIDIA container runtime."
+  else
+    log "Software acceleration selected because SELKIES_ACCELERATION=software was requested."
+  fi
+}
+
 resolve_acceleration() {
   case "$SELKIES_ACCELERATION" in
     hardware)
@@ -332,7 +363,9 @@ main() {
   network="$(resolve_network)"
 
   log "Installing Selkies desktop from ${image_ref}"
-  log "Mode: ${SELKIES_MODE}; acceleration: ${acceleration}; encoder: ${encoder}; network: ${network}"
+  log "Selkies transport mode requested: ${SELKIES_MODE}; Docker network requested: ${SELKIES_DOCKER_NETWORK}; resolved Docker network: ${network}"
+  log_acceleration_resolution "$acceleration"
+  log "Selkies encoder selected: ${encoder}"
 
   resolve_turn_host
   configure_ufw

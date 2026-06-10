@@ -15,7 +15,8 @@ SELKIES_DOCKER_NETWORK="${SELKIES_DOCKER_NETWORK:-auto}"
 SELKIES_WEB_PORT="${SELKIES_WEB_PORT:-8080}"
 SELKIES_TURN_PORT="${SELKIES_TURN_PORT:-47998}"
 SELKIES_TURN_MIN_PORT="${SELKIES_TURN_MIN_PORT:-47999}"
-SELKIES_TURN_MAX_PORT="${SELKIES_TURN_MAX_PORT:-48000}"
+SELKIES_TURN_MAX_PORT="${SELKIES_TURN_MAX_PORT:-48015}"
+SELKIES_MIN_RELAY_PORT_COUNT="${SELKIES_MIN_RELAY_PORT_COUNT:-8}"
 SELKIES_TURN_PROTOCOL="${SELKIES_TURN_PROTOCOL:-udp}"
 SELKIES_TURN_ENABLE_TCP="${SELKIES_TURN_ENABLE_TCP:-0}"
 SELKIES_TURN_HOST="${SELKIES_TURN_HOST:-}"
@@ -61,7 +62,7 @@ Core settings:
 Default Brev ports:
   8080/tcp
   47998/udp
-  47999-48000/udp
+  47999-48015/udp
 EOF
 }
 
@@ -70,7 +71,7 @@ log() {
   echo "$message"
   if [[ -n "${LOG_FILE:-}" ]]; then
     mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
-    echo "$message" >> "$LOG_FILE" 2>/dev/null || true
+    { echo "$message" >> "$LOG_FILE"; } 2>/dev/null || true
   fi
 }
 
@@ -116,6 +117,15 @@ validate_config() {
     udp|tcp) ;;
     *) die "SELKIES_TURN_PROTOCOL must be udp or tcp; got '${SELKIES_TURN_PROTOCOL}'" ;;
   esac
+  [[ "$SELKIES_TURN_MIN_PORT" =~ ^[0-9]+$ ]] || die "SELKIES_TURN_MIN_PORT must be numeric"
+  [[ "$SELKIES_TURN_MAX_PORT" =~ ^[0-9]+$ ]] || die "SELKIES_TURN_MAX_PORT must be numeric"
+  [[ "$SELKIES_MIN_RELAY_PORT_COUNT" =~ ^[0-9]+$ ]] || die "SELKIES_MIN_RELAY_PORT_COUNT must be numeric"
+  if (( SELKIES_TURN_MAX_PORT < SELKIES_TURN_MIN_PORT )); then
+    die "SELKIES_TURN_MAX_PORT must be greater than or equal to SELKIES_TURN_MIN_PORT"
+  fi
+  if [[ "$SELKIES_MODE" == "webrtc" ]] && (( SELKIES_TURN_MAX_PORT - SELKIES_TURN_MIN_PORT + 1 < SELKIES_MIN_RELAY_PORT_COUNT )); then
+    die "Selkies WebRTC needs at least ${SELKIES_MIN_RELAY_PORT_COUNT} TURN relay ports; got ${SELKIES_TURN_MIN_PORT}-${SELKIES_TURN_MAX_PORT}. Increase SELKIES_TURN_MAX_PORT or lower SELKIES_MIN_RELAY_PORT_COUNT only for single-user testing."
+  fi
 }
 
 apt_install() {
@@ -286,6 +296,7 @@ SELKIES_WEB_PORT=${SELKIES_WEB_PORT}
 SELKIES_TURN_PORT=${SELKIES_TURN_PORT}
 SELKIES_TURN_MIN_PORT=${SELKIES_TURN_MIN_PORT}
 SELKIES_TURN_MAX_PORT=${SELKIES_TURN_MAX_PORT}
+SELKIES_MIN_RELAY_PORT_COUNT=${SELKIES_MIN_RELAY_PORT_COUNT}
 EOF
 }
 

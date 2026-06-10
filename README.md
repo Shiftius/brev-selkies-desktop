@@ -37,7 +37,9 @@ Default WebRTC Launchable ports:
 
 - `8080/tcp`: Brev Secure Link, usually named `desktop`.
 - `47998/udp`: Selkies internal TURN listener.
-- `47999-48000/udp`: compact Selkies TURN relay range.
+- `47999-48015/udp`: compact Selkies TURN relay range.
+
+Do not shrink the relay range to only one or two ports. Reconnects can leave old TURN allocations around briefly, and a too-small relay range can fail with coturn `error 508: Cannot create socket` / `no available ports`. The script now requires at least eight relay ports by default.
 
 For `SELKIES_MODE=kasmvnc`, expose only:
 
@@ -95,6 +97,16 @@ export REMOTE_DESKTOP_PASSWORD="choose-a-strong-password"
 bash -n assets/brev-selkies-desktop.sh
 SELKIES_ACCELERATION=software assets/brev-selkies-desktop.sh --print-config
 ```
+
+## Troubleshooting
+
+If the first stream works but refresh/reconnect later fails while the container still looks healthy, check the container log:
+
+```bash
+docker exec brev-selkies-desktop tail -n 200 /tmp/selkies-gstreamer-entrypoint.log
+```
+
+Messages such as `create_relay_ioa_sockets: no available ports` or `ALLOCATE processed, error 508: Cannot create socket` mean the exposed TURN relay range is too small. Expose the full default range, `47998-48015/udp`, and rerun the Launchable.
 
 ## References
 

@@ -9,10 +9,18 @@ SELKIES_HARDWARE_IMAGE="${SELKIES_HARDWARE_IMAGE:-ghcr.io/selkies-project/nvidia
 SELKIES_SOFTWARE_IMAGE="${SELKIES_SOFTWARE_IMAGE:-ghcr.io/selkies-project/nvidia-egl-desktop}"
 SELKIES_TAG="${SELKIES_TAG:-}"
 SELKIES_CONTAINER_NAME="${SELKIES_CONTAINER_NAME:-brev-selkies-desktop}"
+SELKIES_DEPLOYMENT="${SELKIES_DEPLOYMENT:-container}"
+SELKIES_HOST_DOCKER="${SELKIES_HOST_DOCKER:-1}"
 SELKIES_MODE="${SELKIES_MODE:-webrtc}"
 SELKIES_ACCELERATION="${SELKIES_ACCELERATION:-auto}"
 SELKIES_ENCODER="${SELKIES_ENCODER:-}"
 SELKIES_DOCKER_NETWORK="${SELKIES_DOCKER_NETWORK:-auto}"
+SELKIES_NATIVE_USER="${SELKIES_NATIVE_USER:-ubuntu}"
+SELKIES_NATIVE_DISPLAY="${SELKIES_NATIVE_DISPLAY:-:99}"
+SELKIES_NATIVE_DIR="${SELKIES_NATIVE_DIR:-/opt/selkies-gstreamer}"
+SELKIES_TURN_REALM="${SELKIES_TURN_REALM:-brev-selkies-desktop}"
+SELKIES_TURN_USERNAME="${SELKIES_TURN_USERNAME:-selkies}"
+SELKIES_TURN_PASSWORD="${SELKIES_TURN_PASSWORD:-}"
 
 SELKIES_WEB_PORT="${SELKIES_WEB_PORT:-8080}"
 SELKIES_TURN_PORT="${SELKIES_TURN_PORT:-47998}"
@@ -55,6 +63,12 @@ Core settings:
     are available; otherwise software.
     hardware uses nvh264enc and Docker --gpus all.
     software uses x264enc and does not request Docker GPU access.
+  SELKIES_DEPLOYMENT=container|native
+    container runs the Selkies desktop image. native installs host Selkies,
+    coturn, and a host XFCE desktop with systemd services.
+  SELKIES_HOST_DOCKER=1|0
+    Container deployment only. When enabled, mount the host Docker socket into
+    the desktop so Docker commands from the desktop control the Brev host.
   SELKIES_MODE=webrtc|kasmvnc
     webrtc uses 8080/tcp plus TURN ports.
     kasmvnc uses only 8080/tcp and is the last-resort single-port mode.
@@ -106,6 +120,10 @@ ubuntu_version() {
 }
 
 validate_config() {
+  case "$SELKIES_DEPLOYMENT" in
+    container|native) ;;
+    *) die "SELKIES_DEPLOYMENT must be container or native; got '${SELKIES_DEPLOYMENT}'" ;;
+  esac
   case "$SELKIES_MODE" in
     webrtc|kasmvnc) ;;
     *) die "SELKIES_MODE must be webrtc or kasmvnc; got '${SELKIES_MODE}'" ;;
@@ -153,11 +171,22 @@ ensure_docker() {
   fi
 }
 
+ensure_docker_for_desktop() {
+  ensure_docker
+  command -v docker >/dev/null 2>&1 || die "Docker CLI is required for SELKIES_HOST_DOCKER=1"
+  [[ -S /var/run/docker.sock ]] || die "Docker socket /var/run/docker.sock is not available"
+}
+
 nvidia_runtime_ready() {
   command -v nvidia-smi >/dev/null 2>&1 \
     && nvidia-smi -L >/dev/null 2>&1 \
     && command -v nvidia-container-cli >/dev/null 2>&1 \
     && nvidia-container-cli info >/dev/null 2>&1
+}
+
+nvidia_gpu_ready() {
+  command -v nvidia-smi >/dev/null 2>&1 \
+    && nvidia-smi -L >/dev/null 2>&1
 }
 
 nvidia_accelerator_summary() {
@@ -178,14 +207,24 @@ log_acceleration_resolution() {
     else
       log "Detected NVIDIA hardware accelerator(s): <nvidia-smi unavailable despite hardware mode>"
     fi
-    log "NVIDIA container runtime: available"
+    if [[ "$SELKIES_DEPLOYMENT" == "container" ]]; then
+      log "NVIDIA container runtime: available"
+    fi
     if [[ "$SELKIES_ACCELERATION" == "auto" ]]; then
-      log "Hardware acceleration selected because auto mode found a healthy NVIDIA GPU and NVIDIA container runtime."
+      if [[ "$SELKIES_DEPLOYMENT" == "container" ]]; then
+        log "Hardware acceleration selected because auto mode found a healthy NVIDIA GPU and NVIDIA container runtime."
+      else
+        log "Hardware acceleration selected because auto mode found a healthy NVIDIA GPU."
+      fi
     else
       log "Hardware acceleration selected because SELKIES_ACCELERATION=hardware was requested and prerequisites passed."
     fi
   elif [[ "$SELKIES_ACCELERATION" == "auto" ]]; then
-    log "Software acceleration selected because auto mode did not find both a healthy NVIDIA GPU and NVIDIA container runtime."
+    if [[ "$SELKIES_DEPLOYMENT" == "container" ]]; then
+      log "Software acceleration selected because auto mode did not find both a healthy NVIDIA GPU and NVIDIA container runtime."
+    else
+      log "Software acceleration selected because auto mode did not find a healthy NVIDIA GPU."
+    fi
   else
     log "Software acceleration selected because SELKIES_ACCELERATION=software was requested."
   fi
@@ -194,14 +233,20 @@ log_acceleration_resolution() {
 resolve_acceleration() {
   case "$SELKIES_ACCELERATION" in
     hardware)
-      nvidia_runtime_ready || die "SELKIES_ACCELERATION=hardware requires a healthy NVIDIA GPU and NVIDIA container runtime"
+      if [[ "$SELKIES_DEPLOYMENT" == "container" ]]; then
+        nvidia_runtime_ready || die "SELKIES_ACCELERATION=hardware requires a healthy NVIDIA GPU and NVIDIA container runtime"
+      else
+        nvidia_gpu_ready || die "SELKIES_ACCELERATION=hardware requires a healthy NVIDIA GPU"
+      fi
       printf '%s\n' hardware
       ;;
     software)
       printf '%s\n' software
       ;;
     auto)
-      if nvidia_runtime_ready; then
+      if [[ "$SELKIES_DEPLOYMENT" == "container" ]] && nvidia_runtime_ready; then
+        printf '%s\n' hardware
+      elif [[ "$SELKIES_DEPLOYMENT" == "native" ]] && nvidia_gpu_ready; then
         printf '%s\n' hardware
       else
         printf '%s\n' software
@@ -244,6 +289,22 @@ log_image_resolution() {
     log "Selkies image selected for hardware acceleration: ${image}"
   else
     log "Selkies image selected for software acceleration: ${image}"
+  fi
+}
+
+resolve_turn_password() {
+  if [[ -n "$SELKIES_TURN_PASSWORD" ]]; then
+    printf '%s\n' "$SELKIES_TURN_PASSWORD"
+    return 0
+  fi
+  if [[ -r /etc/brev-selkies-desktop/native.env ]]; then
+    awk -F= '$1 == "SELKIES_TURN_PASSWORD" { print substr($0, index($0, "=") + 1); found=1 } END { exit(found ? 0 : 1) }' /etc/brev-selkies-desktop/native.env 2>/dev/null && return 0
+  fi
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 24
+  else
+    tr -dc 'A-Za-z0-9' </dev/urandom | head -c 48
+    printf '\n'
   fi
 }
 
@@ -312,6 +373,16 @@ require_tcp_port_free() {
   fi
 }
 
+stop_existing_deployments() {
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl stop brev-selkies-native.service >/dev/null 2>&1 || true
+    systemctl stop coturn >/dev/null 2>&1 || true
+  fi
+  if command -v docker >/dev/null 2>&1; then
+    docker rm -f "$SELKIES_CONTAINER_NAME" >/dev/null 2>&1 || true
+  fi
+}
+
 docker_port_args() {
   local network="$1"
   [[ "$network" == "host" ]] && return 0
@@ -352,9 +423,13 @@ SELKIES_IMAGE=${SELKIES_IMAGE}
 SELKIES_HARDWARE_IMAGE=${SELKIES_HARDWARE_IMAGE}
 SELKIES_SOFTWARE_IMAGE=${SELKIES_SOFTWARE_IMAGE}
 SELKIES_TAG=${tag}
+SELKIES_DEPLOYMENT=${SELKIES_DEPLOYMENT}
+SELKIES_HOST_DOCKER=${SELKIES_HOST_DOCKER}
 SELKIES_MODE=${SELKIES_MODE}
 SELKIES_ACCELERATION=${SELKIES_ACCELERATION}
 SELKIES_DOCKER_NETWORK=${SELKIES_DOCKER_NETWORK}
+SELKIES_NATIVE_USER=${SELKIES_NATIVE_USER}
+SELKIES_NATIVE_DISPLAY=${SELKIES_NATIVE_DISPLAY}
 SELKIES_WEB_PORT=${SELKIES_WEB_PORT}
 SELKIES_TURN_PORT=${SELKIES_TURN_PORT}
 SELKIES_TURN_MIN_PORT=${SELKIES_TURN_MIN_PORT}
@@ -363,52 +438,182 @@ SELKIES_MIN_RELAY_PORT_COUNT=${SELKIES_MIN_RELAY_PORT_COUNT}
 EOF
 }
 
-main() {
-  case "${1:-}" in
-    --help|-h)
-      usage
-      exit 0
-      ;;
-    --print-config)
-      validate_config
-      print_config
-      exit 0
-      ;;
-    "")
-      ;;
-    *)
-      usage
-      exit 2
-      ;;
-  esac
+install_native_desktop() {
+  local version="$1"
+  local acceleration="$2"
+  local encoder="$3"
+  local turn_password
 
-  require_root
-  validate_config
-  apt_install ca-certificates curl
+  if [[ "$SELKIES_MODE" != "webrtc" ]]; then
+    die "SELKIES_DEPLOYMENT=native currently supports SELKIES_MODE=webrtc only"
+  fi
+  id "$SELKIES_NATIVE_USER" >/dev/null 2>&1 || die "SELKIES_NATIVE_USER '${SELKIES_NATIVE_USER}' does not exist"
+  turn_password="$(resolve_turn_password)"
+  SELKIES_TURN_PASSWORD="$turn_password"
+
+  log "Installing native Selkies host desktop for user ${SELKIES_NATIVE_USER}"
+  log "Native mode installs host XFCE, portable Selkies-GStreamer, coturn, and systemd services."
+  log "Native mode leaves Docker on the Brev host; users are not inside a desktop container."
+  apt_install \
+    jq tar gzip ca-certificates curl openssl coturn \
+    dbus-x11 xfce4 xfce4-terminal firefox xterm \
+    libpulse0 pulseaudio wayland-protocols libwayland-dev libwayland-egl1 \
+    x11-utils x11-xkb-utils x11-xserver-utils xserver-xorg-core \
+    libx11-xcb1 libxcb-dri3-0 libxkbcommon0 libxdamage1 libxfixes3 \
+    libxv1 libxtst6 libxext6 xvfb
   ensure_docker
 
+  log "Downloading Selkies-GStreamer portable release v${version}"
+  rm -rf "$SELKIES_NATIVE_DIR"
+  curl -fsSL "https://github.com/selkies-project/selkies/releases/download/v${version}/selkies-gstreamer-portable-v${version}_amd64.tar.gz" \
+    | tar -xzf - -C /opt
+  [[ -x "${SELKIES_NATIVE_DIR}/selkies-gstreamer-run" ]] || die "Selkies portable runner was not installed at ${SELKIES_NATIVE_DIR}/selkies-gstreamer-run"
+
+  mkdir -p /etc/brev-selkies-desktop
+  chmod 755 /etc/brev-selkies-desktop
+  cat > /etc/brev-selkies-desktop/native.env <<EOF
+SELKIES_WEB_PORT=${SELKIES_WEB_PORT}
+SELKIES_MODE=${SELKIES_MODE}
+SELKIES_ACCELERATION=${acceleration}
+SELKIES_ENCODER=${encoder}
+SELKIES_NATIVE_DISPLAY=${SELKIES_NATIVE_DISPLAY}
+SELKIES_NATIVE_DIR=${SELKIES_NATIVE_DIR}
+SELKIES_ENABLE_BASIC_AUTH=${SELKIES_ENABLE_BASIC_AUTH}
+SELKIES_BASIC_AUTH_USER=${SELKIES_BASIC_AUTH_USER}
+SELKIES_BASIC_AUTH_PASSWORD=${REMOTE_DESKTOP_PASSWORD}
+SELKIES_TURN_HOST=${SELKIES_TURN_HOST}
+SELKIES_TURN_PORT=${SELKIES_TURN_PORT}
+SELKIES_TURN_PROTOCOL=${SELKIES_TURN_PROTOCOL}
+SELKIES_TURN_USERNAME=${SELKIES_TURN_USERNAME}
+SELKIES_TURN_PASSWORD=${SELKIES_TURN_PASSWORD}
+SELKIES_DISPLAY_WIDTH=${SELKIES_DISPLAY_WIDTH}
+SELKIES_DISPLAY_HEIGHT=${SELKIES_DISPLAY_HEIGHT}
+EOF
+  chmod 600 /etc/brev-selkies-desktop/native.env
+
+  cat > /etc/turnserver.conf <<EOF
+listening-ip=0.0.0.0
+listening-ip=::
+listening-port=${SELKIES_TURN_PORT}
+realm=${SELKIES_TURN_REALM}
+lt-cred-mech
+user=${SELKIES_TURN_USERNAME}:${SELKIES_TURN_PASSWORD}
+min-port=${SELKIES_TURN_MIN_PORT}
+max-port=${SELKIES_TURN_MAX_PORT}
+no-software-attribute
+no-rfc5780
+no-stun-backward-compatibility
+response-origin-only-with-rfc5780
+EOF
+  if [[ -n "$SELKIES_TURN_EXTERNAL_IP" ]]; then
+    printf 'external-ip=%s\n' "$SELKIES_TURN_EXTERNAL_IP" >> /etc/turnserver.conf
+  fi
+  if grep -q '^#\?TURNSERVER_ENABLED=' /etc/default/coturn; then
+    sed -i 's/^#\?TURNSERVER_ENABLED=.*/TURNSERVER_ENABLED=1/' /etc/default/coturn
+  else
+    printf 'TURNSERVER_ENABLED=1\n' >> /etc/default/coturn
+  fi
+  systemctl enable --now coturn
+  systemctl restart coturn
+
+  cat > /usr/local/bin/brev-selkies-native-start <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+. /etc/brev-selkies-desktop/native.env
+
+export DISPLAY="${SELKIES_NATIVE_DISPLAY}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/selkies-runtime-${USER}}"
+export PIPEWIRE_LATENCY="128/48000"
+export PIPEWIRE_RUNTIME_DIR="${PIPEWIRE_RUNTIME_DIR:-${XDG_RUNTIME_DIR}}"
+export PULSE_RUNTIME_PATH="${PULSE_RUNTIME_PATH:-${XDG_RUNTIME_DIR}/pulse}"
+export PULSE_SERVER="${PULSE_SERVER:-unix:${PULSE_RUNTIME_PATH}/native}"
+
+mkdir -p "${XDG_RUNTIME_DIR}" "${PULSE_RUNTIME_PATH}"
+chmod 700 "${XDG_RUNTIME_DIR}" "${PULSE_RUNTIME_PATH}" 2>/dev/null || true
+
+if [[ ! -S "/tmp/.X11-unix/X${DISPLAY#*:}" ]]; then
+  Xvfb "${DISPLAY}" \
+    -screen 0 "${SELKIES_DISPLAY_WIDTH}x${SELKIES_DISPLAY_HEIGHT}x24" \
+    +extension COMPOSITE +extension DAMAGE +extension GLX +extension RANDR \
+    +extension RENDER +extension MIT-SHM +extension XFIXES +extension XTEST \
+    +iglx +render -nolisten tcp -ac -noreset \
+    >/tmp/Xvfb_selkies.log 2>&1 &
+fi
+
+until [[ -S "/tmp/.X11-unix/X${DISPLAY#*:}" ]]; do
+  sleep 0.5
+done
+
+pulseaudio -k >/dev/null 2>&1 || true
+pulseaudio --log-target=file:/tmp/pulseaudio_selkies.log --disallow-exit >/dev/null 2>&1 &
+
+if ! pgrep -u "$(id -u)" -f "xfce4-session" >/dev/null 2>&1; then
+  dbus-launch --exit-with-session xfce4-session >/tmp/xfce4_selkies.log 2>&1 &
+fi
+
+if [[ -r "${SELKIES_NATIVE_DIR}/gst-env" ]]; then
+  # shellcheck disable=SC1091
+  . "${SELKIES_NATIVE_DIR}/gst-env"
+fi
+
+exec "${SELKIES_NATIVE_DIR}/selkies-gstreamer-run" \
+  --addr=0.0.0.0 \
+  --port="${SELKIES_WEB_PORT}" \
+  --enable_https=false \
+  --enable_basic_auth="${SELKIES_ENABLE_BASIC_AUTH}" \
+  --basic_auth_user="${SELKIES_BASIC_AUTH_USER}" \
+  --basic_auth_password="${SELKIES_BASIC_AUTH_PASSWORD}" \
+  --encoder="${SELKIES_ENCODER}" \
+  --enable_resize=true \
+  --turn_host="${SELKIES_TURN_HOST}" \
+  --turn_port="${SELKIES_TURN_PORT}" \
+  --turn_protocol="${SELKIES_TURN_PROTOCOL}" \
+  --turn_username="${SELKIES_TURN_USERNAME}" \
+  --turn_password="${SELKIES_TURN_PASSWORD}"
+EOF
+  chmod 755 /usr/local/bin/brev-selkies-native-start
+
+  cat > /etc/systemd/system/brev-selkies-native.service <<EOF
+[Unit]
+Description=Brev Selkies Native Desktop
+After=network-online.target coturn.service docker.service
+Wants=network-online.target coturn.service docker.service
+
+[Service]
+Type=simple
+User=${SELKIES_NATIVE_USER}
+Environment=USER=${SELKIES_NATIVE_USER}
+Environment=HOME=/home/${SELKIES_NATIVE_USER}
+WorkingDirectory=/home/${SELKIES_NATIVE_USER}
+ExecStart=/usr/local/bin/brev-selkies-native-start
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable brev-selkies-native.service
+  systemctl restart brev-selkies-native.service
+}
+
+install_container_desktop() {
   local version image image_ref acceleration encoder network
-  version="${SELKIES_TAG:-$(ubuntu_version)}"
-  acceleration="$(resolve_acceleration)"
+  version="$1"
+  acceleration="$2"
+  encoder="$3"
   image="$(resolve_image "$acceleration")"
   image_ref="${image}:${version}"
-  encoder="$(resolve_encoder "$acceleration")"
   network="$(resolve_network)"
+
+  ensure_docker
 
   log "Installing Selkies desktop from ${image_ref}"
   log "Selkies transport mode requested: ${SELKIES_MODE}; Docker network requested: ${SELKIES_DOCKER_NETWORK}; resolved Docker network: ${network}"
-  log_acceleration_resolution "$acceleration"
   log_image_resolution "$acceleration" "$image"
   log "Selkies encoder selected: ${encoder}"
-
-  resolve_turn_host
-  configure_ufw
-  require_tcp_port_free "$SELKIES_WEB_PORT"
-  if [[ "$SELKIES_MODE" == "webrtc" ]] && { is_truthy "$SELKIES_TURN_ENABLE_TCP" || [[ "$SELKIES_TURN_PROTOCOL" == "tcp" ]]; }; then
-    require_tcp_port_free "$SELKIES_TURN_PORT"
-  fi
-
-  docker rm -f "$SELKIES_CONTAINER_NAME" >/dev/null 2>&1 || true
 
   local network_args=()
   if [[ "$network" == "host" ]]; then
@@ -418,6 +623,7 @@ main() {
   # shellcheck disable=SC2206
   local port_args=( $(docker_port_args "$network") )
   local gpu_args=()
+  local host_docker_args=()
   local env_args=(
     -e "TZ=${TZ:-UTC}"
     -e "DISPLAY_SIZEW=${SELKIES_DISPLAY_WIDTH}"
@@ -461,6 +667,20 @@ main() {
     )
   fi
 
+  if is_truthy "$SELKIES_HOST_DOCKER"; then
+    ensure_docker_for_desktop
+    log "Host Docker is enabled inside the desktop container."
+    log "WARNING: /var/run/docker.sock gives the desktop root-equivalent control over Docker on the Brev host."
+    host_docker_args+=(
+      -v /var/run/docker.sock:/var/run/docker.sock
+      --group-add "$(stat -c '%g' /var/run/docker.sock)"
+    )
+    env_args+=( -e "DOCKER_HOST=unix:///var/run/docker.sock" )
+    if [[ -x /usr/bin/docker ]]; then
+      host_docker_args+=( -v /usr/bin/docker:/usr/bin/docker:ro )
+    fi
+  fi
+
   log "Running: docker pull ${image_ref}"
   docker pull "$image_ref"
   log "Starting container ${SELKIES_CONTAINER_NAME}"
@@ -469,10 +689,57 @@ main() {
     --restart unless-stopped \
     "${gpu_args[@]}" \
     "${network_args[@]}" \
+    "${host_docker_args[@]}" \
     --tmpfs /dev/shm:rw \
     "${env_args[@]}" \
     "${port_args[@]}" \
     "$image_ref"
+}
+
+main() {
+  case "${1:-}" in
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --print-config)
+      validate_config
+      print_config
+      exit 0
+      ;;
+    "")
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+
+  require_root
+  validate_config
+  apt_install ca-certificates curl
+
+  local version acceleration encoder
+  version="${SELKIES_TAG:-$(ubuntu_version)}"
+  acceleration="$(resolve_acceleration)"
+  encoder="$(resolve_encoder "$acceleration")"
+
+  log "Selkies deployment requested: ${SELKIES_DEPLOYMENT}"
+  log_acceleration_resolution "$acceleration"
+  log "Selkies encoder selected: ${encoder}"
+
+  resolve_turn_host
+  configure_ufw
+  stop_existing_deployments
+  require_tcp_port_free "$SELKIES_WEB_PORT"
+  if [[ "$SELKIES_MODE" == "webrtc" ]] && { is_truthy "$SELKIES_TURN_ENABLE_TCP" || [[ "$SELKIES_TURN_PROTOCOL" == "tcp" ]]; }; then
+    require_tcp_port_free "$SELKIES_TURN_PORT"
+  fi
+
+  case "$SELKIES_DEPLOYMENT" in
+    container) install_container_desktop "$version" "$acceleration" "$encoder" ;;
+    native) install_native_desktop "$version" "$acceleration" "$encoder" ;;
+  esac
 
   healthcheck
   log "Selkies desktop is ready. Expose ${SELKIES_WEB_PORT}/tcp as the Brev Secure Link."

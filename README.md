@@ -20,12 +20,30 @@ Use this as the Brev Launchable user script:
 set -euo pipefail
 
 export SELKIES_ACCELERATION=auto
+export SELKIES_DEPLOYMENT=container
 export SELKIES_MODE=webrtc
 
 curl -fsSL "https://raw.githubusercontent.com/Shiftius/brev-selkies-desktop/main/assets/brev-selkies-desktop.sh" | sudo -E bash
 ```
 
 ## Modes
+
+`SELKIES_DEPLOYMENT` controls where the desktop runs:
+
+- `container`, default: run the Selkies all-in-one desktop image.
+- `native`: experimental host install that runs XFCE, Selkies-GStreamer, coturn, and Docker directly on the Brev host with systemd services.
+
+Container deployment also enables host Docker access by default:
+
+```bash
+export SELKIES_HOST_DOCKER=1
+```
+
+That mounts `/var/run/docker.sock` and the host Docker CLI into the desktop container so Docker commands from the desktop control the Brev host. This is convenient for ROS/dev-container workflows, but it gives the desktop root-equivalent Docker control on the host. Disable it with:
+
+```bash
+export SELKIES_HOST_DOCKER=0
+```
 
 `SELKIES_ACCELERATION` controls encode/runtime behavior:
 
@@ -74,6 +92,16 @@ Use single-port KasmVNC fallback:
 export SELKIES_MODE=kasmvnc
 ```
 
+Test native host deployment:
+
+```bash
+export SELKIES_DEPLOYMENT=native
+export SELKIES_ACCELERATION=auto
+export SELKIES_MODE=webrtc
+```
+
+Native mode installs `coturn` on the host and uses the same default Launchable ports. It intentionally avoids the all-in-one Selkies desktop container so Docker commands inside the streamed desktop operate on the Brev host naturally.
+
 Override the image selection:
 
 ```bash
@@ -110,6 +138,7 @@ export REMOTE_DESKTOP_PASSWORD="choose-a-strong-password"
 ```bash
 bash -n assets/brev-selkies-desktop.sh
 SELKIES_ACCELERATION=software assets/brev-selkies-desktop.sh --print-config
+SELKIES_DEPLOYMENT=native assets/brev-selkies-desktop.sh --print-config
 ```
 
 ## Troubleshooting

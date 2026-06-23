@@ -4,6 +4,13 @@ Minimal Launchable assets for running a browser-based Selkies desktop on Brev.
 
 This repository is intentionally Selkies-only. It does not include NV Streamer packages, NV Streamer service recovery, or driver-alignment logic.
 
+The script chooses the Selkies image from the resolved acceleration mode:
+
+- hardware acceleration: `ghcr.io/selkies-project/nvidia-glx-desktop`
+- software acceleration: `ghcr.io/selkies-project/nvidia-egl-desktop`
+
+Set `SELKIES_IMAGE` only when you need to override that automatic selection.
+
 ## Launchable Script
 
 Use this as the Brev Launchable user script:
@@ -23,8 +30,8 @@ curl -fsSL "https://raw.githubusercontent.com/Shiftius/brev-selkies-desktop/main
 `SELKIES_ACCELERATION` controls encode/runtime behavior:
 
 - `auto`, default: use NVIDIA hardware acceleration only when the GPU and NVIDIA container runtime are both healthy; otherwise use software acceleration.
-- `hardware`: require NVIDIA GPU/container-runtime readiness, run Docker with `--gpus all`, and default `SELKIES_ENCODER=nvh264enc`.
-- `software`: do not request Docker GPU access and default `SELKIES_ENCODER=x264enc`.
+- `hardware`: require NVIDIA GPU/container-runtime readiness, run Docker with `--gpus all`, default `SELKIES_ENCODER=nvh264enc`, and use the NVIDIA GLX desktop image.
+- `software`: do not request Docker GPU access, default `SELKIES_ENCODER=x264enc`, and use the NVIDIA EGL desktop image for its software fallback path.
 
 `SELKIES_MODE` controls the browser transport:
 
@@ -67,14 +74,21 @@ Use single-port KasmVNC fallback:
 export SELKIES_MODE=kasmvnc
 ```
 
-Override the image:
+Override the image selection:
 
 ```bash
-export SELKIES_IMAGE="ghcr.io/selkies-project/nvidia-egl-desktop"
+export SELKIES_IMAGE="ghcr.io/selkies-project/nvidia-glx-desktop"
 export SELKIES_TAG="24.04"
 ```
 
 Leave `SELKIES_TAG` unset to match the instance Ubuntu version (`22.04` or `24.04`).
+
+Override only the automatic defaults:
+
+```bash
+export SELKIES_HARDWARE_IMAGE="ghcr.io/selkies-project/nvidia-glx-desktop"
+export SELKIES_SOFTWARE_IMAGE="ghcr.io/selkies-project/nvidia-egl-desktop"
+```
 
 ## Authentication
 
@@ -111,4 +125,5 @@ Messages such as `create_relay_ioa_sockets: no available ports` or `ALLOCATE pro
 ## References
 
 - [docker-selkies-egl-desktop](https://github.com/selkies-project/docker-selkies-egl-desktop)
+- [docker-selkies-glx-desktop](https://github.com/selkies-project/docker-selkies-glx-desktop)
 - [Selkies encoder components](https://github.com/selkies-project/selkies/blob/main/docs/component.md)

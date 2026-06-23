@@ -4,7 +4,9 @@ set -euo pipefail
 PROGRAM_NAME="$(basename "$0")"
 LOG_FILE="${BREV_SELKIES_LOG:-/var/log/brev-selkies-desktop.log}"
 
-SELKIES_IMAGE="${SELKIES_IMAGE:-ghcr.io/selkies-project/nvidia-egl-desktop}"
+SELKIES_IMAGE="${SELKIES_IMAGE:-}"
+SELKIES_HARDWARE_IMAGE="${SELKIES_HARDWARE_IMAGE:-ghcr.io/selkies-project/nvidia-glx-desktop}"
+SELKIES_SOFTWARE_IMAGE="${SELKIES_SOFTWARE_IMAGE:-ghcr.io/selkies-project/nvidia-egl-desktop}"
 SELKIES_TAG="${SELKIES_TAG:-}"
 SELKIES_CONTAINER_NAME="${SELKIES_CONTAINER_NAME:-brev-selkies-desktop}"
 SELKIES_MODE="${SELKIES_MODE:-webrtc}"
@@ -58,6 +60,9 @@ Core settings:
     kasmvnc uses only 8080/tcp and is the last-resort single-port mode.
   SELKIES_ENCODER=<gstreamer encoder>
     Optional override, for example nvh264enc, x264enc, vp8enc, or vp9enc.
+  SELKIES_IMAGE=<image>
+    Optional override. When unset, hardware mode uses SELKIES_HARDWARE_IMAGE
+    and software mode uses SELKIES_SOFTWARE_IMAGE.
 
 Default Brev ports:
   8080/tcp
@@ -217,6 +222,31 @@ resolve_encoder() {
   esac
 }
 
+resolve_image() {
+  local acceleration="$1"
+  if [[ -n "$SELKIES_IMAGE" ]]; then
+    printf '%s\n' "$SELKIES_IMAGE"
+    return 0
+  fi
+  case "$acceleration" in
+    hardware) printf '%s\n' "$SELKIES_HARDWARE_IMAGE" ;;
+    software) printf '%s\n' "$SELKIES_SOFTWARE_IMAGE" ;;
+  esac
+}
+
+log_image_resolution() {
+  local acceleration="$1"
+  local image="$2"
+
+  if [[ -n "$SELKIES_IMAGE" ]]; then
+    log "Selkies image selected from SELKIES_IMAGE override: ${image}"
+  elif [[ "$acceleration" == "hardware" ]]; then
+    log "Selkies image selected for hardware acceleration: ${image}"
+  else
+    log "Selkies image selected for software acceleration: ${image}"
+  fi
+}
+
 resolve_network() {
   if [[ "$SELKIES_DOCKER_NETWORK" == "auto" ]]; then
     printf '%s\n' bridge
@@ -319,6 +349,8 @@ print_config() {
   fi
   cat <<EOF
 SELKIES_IMAGE=${SELKIES_IMAGE}
+SELKIES_HARDWARE_IMAGE=${SELKIES_HARDWARE_IMAGE}
+SELKIES_SOFTWARE_IMAGE=${SELKIES_SOFTWARE_IMAGE}
 SELKIES_TAG=${tag}
 SELKIES_MODE=${SELKIES_MODE}
 SELKIES_ACCELERATION=${SELKIES_ACCELERATION}
@@ -355,16 +387,18 @@ main() {
   apt_install ca-certificates curl
   ensure_docker
 
-  local version image_ref acceleration encoder network
+  local version image image_ref acceleration encoder network
   version="${SELKIES_TAG:-$(ubuntu_version)}"
-  image_ref="${SELKIES_IMAGE}:${version}"
   acceleration="$(resolve_acceleration)"
+  image="$(resolve_image "$acceleration")"
+  image_ref="${image}:${version}"
   encoder="$(resolve_encoder "$acceleration")"
   network="$(resolve_network)"
 
   log "Installing Selkies desktop from ${image_ref}"
   log "Selkies transport mode requested: ${SELKIES_MODE}; Docker network requested: ${SELKIES_DOCKER_NETWORK}; resolved Docker network: ${network}"
   log_acceleration_resolution "$acceleration"
+  log_image_resolution "$acceleration" "$image"
   log "Selkies encoder selected: ${encoder}"
 
   resolve_turn_host

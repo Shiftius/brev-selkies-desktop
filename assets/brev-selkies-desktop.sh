@@ -184,8 +184,8 @@ EOF
   log "Running: apt-get update"
   apt-get update
   APT_UPDATED=1
-  log "Running: apt-get install -y --no-install-recommends firefox"
-  apt-get install -y --no-install-recommends firefox
+  log "Running: apt-get install -y --allow-downgrades --no-install-recommends firefox"
+  apt-get install -y --allow-downgrades --no-install-recommends firefox
 
   if command -v snap >/dev/null 2>&1 && snap list firefox >/dev/null 2>&1; then
     log "Removing Firefox snap now that Mozilla Firefox deb is installed"

@@ -100,7 +100,7 @@ export SELKIES_ACCELERATION=auto
 export SELKIES_MODE=webrtc
 ```
 
-Native mode installs `coturn` on the host and uses the same default Launchable ports. It intentionally avoids the all-in-one Selkies desktop container so Docker commands inside the streamed desktop operate on the Brev host naturally.
+Native mode installs `coturn` and Firefox on the host and uses the same default Launchable ports. It intentionally avoids the all-in-one Selkies desktop container so Docker commands inside the streamed desktop operate on the Brev host naturally. Firefox is installed from Mozilla's apt repository so the desktop gets a real `.deb` browser instead of Ubuntu's snap transition package.
 
 Native mode downloads the latest `selkies-project/selkies` portable release by default. Pin it when testing a specific Selkies release:
 

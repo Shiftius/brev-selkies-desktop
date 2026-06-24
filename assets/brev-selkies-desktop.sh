@@ -165,6 +165,39 @@ apt_install() {
   apt-get install -y --no-install-recommends "$@"
 }
 
+install_firefox_deb() {
+  log "Installing Firefox from Mozilla's apt repository"
+  apt_install ca-certificates curl gnupg
+
+  install -d -m 0755 /etc/apt/keyrings
+  curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg \
+    -o /etc/apt/keyrings/packages.mozilla.org.asc
+  cat > /etc/apt/sources.list.d/mozilla.list <<'EOF'
+deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main
+EOF
+  cat > /etc/apt/preferences.d/mozilla <<'EOF'
+Package: *
+Pin: origin packages.mozilla.org
+Pin-Priority: 1000
+EOF
+
+  log "Running: apt-get update"
+  apt-get update
+  APT_UPDATED=1
+  log "Running: apt-get install -y --no-install-recommends firefox"
+  apt-get install -y --no-install-recommends firefox
+
+  if command -v snap >/dev/null 2>&1 && snap list firefox >/dev/null 2>&1; then
+    log "Removing Firefox snap now that Mozilla Firefox deb is installed"
+    snap remove firefox >/dev/null 2>&1 || true
+  fi
+  if command -v update-alternatives >/dev/null 2>&1 && command -v firefox >/dev/null 2>&1; then
+    update-alternatives --install /usr/bin/x-www-browser x-www-browser "$(command -v firefox)" 200 >/dev/null 2>&1 || true
+    update-alternatives --set x-www-browser "$(command -v firefox)" >/dev/null 2>&1 || true
+  fi
+  log "Firefox available at: $(command -v firefox)"
+}
+
 ensure_docker() {
   if ! command -v docker >/dev/null 2>&1; then
     apt_install ca-certificates curl docker.io
@@ -482,11 +515,12 @@ install_native_desktop() {
   log "Native mode leaves Docker on the Brev host; users are not inside a desktop container."
   apt_install \
     jq tar gzip ca-certificates curl openssl coturn \
-    dbus-x11 xfce4 xfce4-terminal firefox xterm \
+    dbus-x11 xfce4 xfce4-terminal xterm \
     libpulse0 pulseaudio wayland-protocols libwayland-dev libwayland-egl1 \
     x11-utils x11-xkb-utils x11-xserver-utils xserver-xorg-core \
     libx11-xcb1 libxcb-dri3-0 libxkbcommon0 libxdamage1 libxfixes3 \
     libxv1 libxtst6 libxext6 xvfb
+  install_firefox_deb
   ensure_docker
 
   log "Downloading Selkies-GStreamer portable release v${version}"

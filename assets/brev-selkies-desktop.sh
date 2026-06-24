@@ -467,12 +467,13 @@ install_native_desktop() {
   local version="$1"
   local acceleration="$2"
   local encoder="$3"
-  local turn_password
+  local turn_password native_group
 
   if [[ "$SELKIES_MODE" != "webrtc" ]]; then
     die "SELKIES_DEPLOYMENT=native currently supports SELKIES_MODE=webrtc only"
   fi
   id "$SELKIES_NATIVE_USER" >/dev/null 2>&1 || die "SELKIES_NATIVE_USER '${SELKIES_NATIVE_USER}' does not exist"
+  native_group="$(id -gn "$SELKIES_NATIVE_USER")"
   turn_password="$(resolve_turn_password)"
   SELKIES_TURN_PASSWORD="$turn_password"
 
@@ -514,7 +515,8 @@ SELKIES_TURN_PASSWORD=${SELKIES_TURN_PASSWORD}
 SELKIES_DISPLAY_WIDTH=${SELKIES_DISPLAY_WIDTH}
 SELKIES_DISPLAY_HEIGHT=${SELKIES_DISPLAY_HEIGHT}
 EOF
-  chmod 600 /etc/brev-selkies-desktop/native.env
+  chown "root:${native_group}" /etc/brev-selkies-desktop/native.env
+  chmod 640 /etc/brev-selkies-desktop/native.env
 
   cat > /etc/turnserver.conf <<EOF
 listening-ip=0.0.0.0

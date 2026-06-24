@@ -19,6 +19,7 @@ SELKIES_NATIVE_USER="${SELKIES_NATIVE_USER:-ubuntu}"
 SELKIES_NATIVE_DISPLAY="${SELKIES_NATIVE_DISPLAY:-:99}"
 SELKIES_NATIVE_DIR="${SELKIES_NATIVE_DIR:-/opt/selkies-gstreamer}"
 SELKIES_NATIVE_VERSION="${SELKIES_NATIVE_VERSION:-}"
+SELKIES_NATIVE_X_SERVER="${SELKIES_NATIVE_X_SERVER:-auto}"
 SELKIES_TURN_REALM="${SELKIES_TURN_REALM:-brev-selkies-desktop}"
 SELKIES_TURN_USERNAME="${SELKIES_TURN_USERNAME:-selkies}"
 SELKIES_TURN_PASSWORD="${SELKIES_TURN_PASSWORD:-}"
@@ -73,6 +74,9 @@ Core settings:
   SELKIES_NATIVE_VERSION=<selkies release>
     Native deployment only. Defaults to the latest selkies-project/selkies
     GitHub release, for example 1.6.2.
+  SELKIES_NATIVE_X_SERVER=auto|nvidia|xvfb
+    Native deployment only. auto uses NVIDIA Xorg for hardware mode and Xvfb
+    for software mode.
   SELKIES_MODE=webrtc|kasmvnc
     webrtc uses 8080/tcp plus TURN ports.
     kasmvnc uses only 8080/tcp and is the last-resort single-port mode.
@@ -143,6 +147,10 @@ validate_config() {
   case "$SELKIES_TURN_PROTOCOL" in
     udp|tcp) ;;
     *) die "SELKIES_TURN_PROTOCOL must be udp or tcp; got '${SELKIES_TURN_PROTOCOL}'" ;;
+  esac
+  case "$SELKIES_NATIVE_X_SERVER" in
+    auto|nvidia|xvfb) ;;
+    *) die "SELKIES_NATIVE_X_SERVER must be auto, nvidia, or xvfb; got '${SELKIES_NATIVE_X_SERVER}'" ;;
   esac
   [[ "$SELKIES_TURN_MIN_PORT" =~ ^[0-9]+$ ]] || die "SELKIES_TURN_MIN_PORT must be numeric"
   [[ "$SELKIES_TURN_MAX_PORT" =~ ^[0-9]+$ ]] || die "SELKIES_TURN_MAX_PORT must be numeric"
@@ -224,6 +232,21 @@ nvidia_runtime_ready() {
 nvidia_gpu_ready() {
   command -v nvidia-smi >/dev/null 2>&1 \
     && nvidia-smi -L >/dev/null 2>&1
+}
+
+nvidia_xorg_ready() {
+  nvidia_gpu_ready \
+    && command -v Xorg >/dev/null 2>&1 \
+    && [[ -r /usr/lib/xorg/modules/drivers/nvidia_drv.so ]]
+}
+
+nvidia_xorg_bus_id() {
+  local pci domain bus slot func
+  pci="$(nvidia-smi --query-gpu=pci.bus_id --format=csv,noheader,nounits 2>/dev/null | head -n 1)"
+  [[ -n "$pci" ]] || return 1
+  IFS=':.' read -r domain bus slot func <<<"$pci"
+  [[ -n "$bus" && -n "$slot" && -n "$func" ]] || return 1
+  printf 'PCI:%d:%d:%d\n' "$((16#$bus))" "$((16#$slot))" "$((16#$func))"
 }
 
 nvidia_accelerator_summary() {
@@ -373,6 +396,56 @@ resolve_install_version() {
   esac
 }
 
+resolve_native_x_server() {
+  local acceleration="$1"
+  case "$SELKIES_NATIVE_X_SERVER" in
+    nvidia)
+      nvidia_xorg_ready || die "SELKIES_NATIVE_X_SERVER=nvidia requires Xorg and the NVIDIA Xorg driver"
+      printf '%s\n' nvidia
+      ;;
+    xvfb)
+      printf '%s\n' xvfb
+      ;;
+    auto)
+      if [[ "$acceleration" == "hardware" ]] && nvidia_xorg_ready; then
+        printf '%s\n' nvidia
+      else
+        printf '%s\n' xvfb
+      fi
+      ;;
+  esac
+}
+
+write_nvidia_xorg_config() {
+  local bus_id="$1"
+  local config_path="$2"
+  cat > "$config_path" <<EOF
+Section "ServerLayout"
+    Identifier "Layout0"
+    Screen 0 "Screen0"
+EndSection
+
+Section "Device"
+    Identifier "Device0"
+    Driver "nvidia"
+    BusID "${bus_id}"
+    Option "AllowEmptyInitialConfiguration" "true"
+    Option "VirtualHeads" "1"
+EndSection
+
+Section "Screen"
+    Identifier "Screen0"
+    Device "Device0"
+    DefaultDepth 24
+    Option "AllowEmptyInitialConfiguration" "true"
+    SubSection "Display"
+        Depth 24
+        Virtual ${SELKIES_DISPLAY_WIDTH} ${SELKIES_DISPLAY_HEIGHT}
+    EndSubSection
+EndSection
+EOF
+}
+
 detect_public_ipv4() {
   local url ip
   for url in $PUBLIC_IP_URLS; do
@@ -488,6 +561,7 @@ SELKIES_DOCKER_NETWORK=${SELKIES_DOCKER_NETWORK}
 SELKIES_NATIVE_USER=${SELKIES_NATIVE_USER}
 SELKIES_NATIVE_DISPLAY=${SELKIES_NATIVE_DISPLAY}
 SELKIES_NATIVE_VERSION=${SELKIES_NATIVE_VERSION}
+SELKIES_NATIVE_X_SERVER=${SELKIES_NATIVE_X_SERVER}
 SELKIES_WEB_PORT=${SELKIES_WEB_PORT}
 SELKIES_TURN_PORT=${SELKIES_TURN_PORT}
 SELKIES_TURN_MIN_PORT=${SELKIES_TURN_MIN_PORT}
@@ -500,19 +574,21 @@ install_native_desktop() {
   local version="$1"
   local acceleration="$2"
   local encoder="$3"
-  local turn_password native_group
+  local turn_password native_group native_x_server nvidia_bus_id
 
   if [[ "$SELKIES_MODE" != "webrtc" ]]; then
     die "SELKIES_DEPLOYMENT=native currently supports SELKIES_MODE=webrtc only"
   fi
   id "$SELKIES_NATIVE_USER" >/dev/null 2>&1 || die "SELKIES_NATIVE_USER '${SELKIES_NATIVE_USER}' does not exist"
   native_group="$(id -gn "$SELKIES_NATIVE_USER")"
+  native_x_server="$(resolve_native_x_server "$acceleration")"
   turn_password="$(resolve_turn_password)"
   SELKIES_TURN_PASSWORD="$turn_password"
 
   log "Installing native Selkies host desktop for user ${SELKIES_NATIVE_USER}"
   log "Native mode installs host XFCE, portable Selkies-GStreamer, coturn, and systemd services."
   log "Native mode leaves Docker on the Brev host; users are not inside a desktop container."
+  log "Native X server requested: ${SELKIES_NATIVE_X_SERVER}; resolved: ${native_x_server}"
   apt_install \
     jq tar gzip ca-certificates curl openssl coturn \
     dbus-x11 xfce4 xfce4-terminal xterm \
@@ -531,13 +607,20 @@ install_native_desktop() {
 
   mkdir -p /etc/brev-selkies-desktop
   chmod 755 /etc/brev-selkies-desktop
+  if [[ "$native_x_server" == "nvidia" ]]; then
+    nvidia_bus_id="$(nvidia_xorg_bus_id)" || die "Could not resolve NVIDIA Xorg BusID"
+    log "Writing NVIDIA Xorg config with BusID ${nvidia_bus_id}"
+    write_nvidia_xorg_config "$nvidia_bus_id" /etc/brev-selkies-desktop/xorg-nvidia.conf
+  fi
   cat > /etc/brev-selkies-desktop/native.env <<EOF
+SELKIES_NATIVE_USER=${SELKIES_NATIVE_USER}
 SELKIES_WEB_PORT=${SELKIES_WEB_PORT}
 SELKIES_MODE=${SELKIES_MODE}
 SELKIES_ACCELERATION=${acceleration}
 SELKIES_ENCODER=${encoder}
 SELKIES_NATIVE_DISPLAY=${SELKIES_NATIVE_DISPLAY}
 SELKIES_NATIVE_DIR=${SELKIES_NATIVE_DIR}
+SELKIES_NATIVE_X_SERVER=${native_x_server}
 SELKIES_ENABLE_BASIC_AUTH=${SELKIES_ENABLE_BASIC_AUTH}
 SELKIES_BASIC_AUTH_USER=${SELKIES_BASIC_AUTH_USER}
 SELKIES_BASIC_AUTH_PASSWORD=${REMOTE_DESKTOP_PASSWORD}
@@ -584,6 +667,42 @@ set -euo pipefail
 . /etc/brev-selkies-desktop/native.env
 
 export DISPLAY="${SELKIES_NATIVE_DISPLAY}"
+
+if [[ ! -S "/tmp/.X11-unix/X${DISPLAY#*:}" ]]; then
+  if [[ "${SELKIES_NATIVE_X_SERVER}" == "nvidia" ]]; then
+    rm -f "/tmp/.X${DISPLAY#*:}-lock" "/tmp/.X11-unix/X${DISPLAY#*:}"
+    Xorg "${DISPLAY}" \
+      -noreset \
+      -nolisten tcp \
+      -ac \
+      -config /etc/brev-selkies-desktop/xorg-nvidia.conf \
+      -logfile /var/log/brev-selkies-xorg.log \
+      >/var/log/brev-selkies-xorg.stdout 2>&1 &
+  else
+    Xvfb "${DISPLAY}" \
+      -screen 0 "${SELKIES_DISPLAY_WIDTH}x${SELKIES_DISPLAY_HEIGHT}x24" \
+      +extension COMPOSITE +extension DAMAGE +extension GLX +extension RANDR \
+      +extension RENDER +extension MIT-SHM +extension XFIXES +extension XTEST \
+      +iglx +render -nolisten tcp -ac -noreset \
+      >/tmp/Xvfb_selkies.log 2>&1 &
+  fi
+fi
+
+until [[ -S "/tmp/.X11-unix/X${DISPLAY#*:}" ]]; do
+  sleep 0.5
+done
+
+exec runuser -u "${SELKIES_NATIVE_USER}" -- /usr/local/bin/brev-selkies-user-session
+EOF
+  chmod 755 /usr/local/bin/brev-selkies-native-start
+
+  cat > /usr/local/bin/brev-selkies-user-session <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+. /etc/brev-selkies-desktop/native.env
+
+export DISPLAY="${SELKIES_NATIVE_DISPLAY}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/selkies-runtime-${USER}}"
 export PIPEWIRE_LATENCY="128/48000"
 export PIPEWIRE_RUNTIME_DIR="${PIPEWIRE_RUNTIME_DIR:-${XDG_RUNTIME_DIR}}"
@@ -592,19 +711,6 @@ export PULSE_SERVER="${PULSE_SERVER:-unix:${PULSE_RUNTIME_PATH}/native}"
 
 mkdir -p "${XDG_RUNTIME_DIR}" "${PULSE_RUNTIME_PATH}"
 chmod 700 "${XDG_RUNTIME_DIR}" "${PULSE_RUNTIME_PATH}" 2>/dev/null || true
-
-if [[ ! -S "/tmp/.X11-unix/X${DISPLAY#*:}" ]]; then
-  Xvfb "${DISPLAY}" \
-    -screen 0 "${SELKIES_DISPLAY_WIDTH}x${SELKIES_DISPLAY_HEIGHT}x24" \
-    +extension COMPOSITE +extension DAMAGE +extension GLX +extension RANDR \
-    +extension RENDER +extension MIT-SHM +extension XFIXES +extension XTEST \
-    +iglx +render -nolisten tcp -ac -noreset \
-    >/tmp/Xvfb_selkies.log 2>&1 &
-fi
-
-until [[ -S "/tmp/.X11-unix/X${DISPLAY#*:}" ]]; do
-  sleep 0.5
-done
 
 pulseaudio -k >/dev/null 2>&1 || true
 pulseaudio --log-target=file:/tmp/pulseaudio_selkies.log --disallow-exit >/dev/null 2>&1 &
@@ -633,7 +739,7 @@ exec "${SELKIES_NATIVE_DIR}/selkies-gstreamer-run" \
   --turn_username="${SELKIES_TURN_USERNAME}" \
   --turn_password="${SELKIES_TURN_PASSWORD}"
 EOF
-  chmod 755 /usr/local/bin/brev-selkies-native-start
+  chmod 755 /usr/local/bin/brev-selkies-user-session
 
   cat > /etc/systemd/system/brev-selkies-native.service <<EOF
 [Unit]
@@ -643,10 +749,7 @@ Wants=network-online.target coturn.service docker.service
 
 [Service]
 Type=simple
-User=${SELKIES_NATIVE_USER}
-Environment=USER=${SELKIES_NATIVE_USER}
-Environment=HOME=/home/${SELKIES_NATIVE_USER}
-WorkingDirectory=/home/${SELKIES_NATIVE_USER}
+WorkingDirectory=/root
 ExecStart=/usr/local/bin/brev-selkies-native-start
 Restart=always
 RestartSec=3

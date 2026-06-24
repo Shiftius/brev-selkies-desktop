@@ -108,6 +108,13 @@ Native mode downloads the latest `selkies-project/selkies` portable release by d
 export SELKIES_NATIVE_VERSION=1.6.2
 ```
 
+For hardware acceleration, native mode uses an NVIDIA-backed Xorg display by default instead of `Xvfb`, so browser workloads such as WebGL can use the GPU. Override the display server only when troubleshooting:
+
+```bash
+export SELKIES_NATIVE_X_SERVER=auto
+# or: nvidia, xvfb
+```
+
 Override the image selection:
 
 ```bash

@@ -102,6 +102,12 @@ export SELKIES_MODE=webrtc
 
 Native mode installs `coturn` on the host and uses the same default Launchable ports. It intentionally avoids the all-in-one Selkies desktop container so Docker commands inside the streamed desktop operate on the Brev host naturally.
 
+Native mode downloads the latest `selkies-project/selkies` portable release by default. Pin it when testing a specific Selkies release:
+
+```bash
+export SELKIES_NATIVE_VERSION=1.6.2
+```
+
 Override the image selection:
 
 ```bash

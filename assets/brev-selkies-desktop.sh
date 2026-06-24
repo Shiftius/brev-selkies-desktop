@@ -18,6 +18,7 @@ SELKIES_DOCKER_NETWORK="${SELKIES_DOCKER_NETWORK:-auto}"
 SELKIES_NATIVE_USER="${SELKIES_NATIVE_USER:-ubuntu}"
 SELKIES_NATIVE_DISPLAY="${SELKIES_NATIVE_DISPLAY:-:99}"
 SELKIES_NATIVE_DIR="${SELKIES_NATIVE_DIR:-/opt/selkies-gstreamer}"
+SELKIES_NATIVE_VERSION="${SELKIES_NATIVE_VERSION:-}"
 SELKIES_TURN_REALM="${SELKIES_TURN_REALM:-brev-selkies-desktop}"
 SELKIES_TURN_USERNAME="${SELKIES_TURN_USERNAME:-selkies}"
 SELKIES_TURN_PASSWORD="${SELKIES_TURN_PASSWORD:-}"
@@ -69,6 +70,9 @@ Core settings:
   SELKIES_HOST_DOCKER=1|0
     Container deployment only. When enabled, mount the host Docker socket into
     the desktop so Docker commands from the desktop control the Brev host.
+  SELKIES_NATIVE_VERSION=<selkies release>
+    Native deployment only. Defaults to the latest selkies-project/selkies
+    GitHub release, for example 1.6.2.
   SELKIES_MODE=webrtc|kasmvnc
     webrtc uses 8080/tcp plus TURN ports.
     kasmvnc uses only 8080/tcp and is the last-resort single-port mode.
@@ -316,6 +320,26 @@ resolve_network() {
   fi
 }
 
+latest_selkies_version() {
+  local tag
+  tag="$(curl -fsSL --max-time 10 https://api.github.com/repos/selkies-project/selkies/releases/latest \
+    | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\{0,1\}\([^"]*\)".*/\1/p' \
+    | head -n 1)"
+  [[ -n "$tag" ]] || die "Could not resolve latest Selkies release version"
+  printf '%s\n' "$tag"
+}
+
+resolve_install_version() {
+  case "$SELKIES_DEPLOYMENT" in
+    container)
+      printf '%s\n' "${SELKIES_TAG:-$(ubuntu_version)}"
+      ;;
+    native)
+      printf '%s\n' "${SELKIES_NATIVE_VERSION:-$(latest_selkies_version)}"
+      ;;
+  esac
+}
+
 detect_public_ipv4() {
   local url ip
   for url in $PUBLIC_IP_URLS; do
@@ -430,6 +454,7 @@ SELKIES_ACCELERATION=${SELKIES_ACCELERATION}
 SELKIES_DOCKER_NETWORK=${SELKIES_DOCKER_NETWORK}
 SELKIES_NATIVE_USER=${SELKIES_NATIVE_USER}
 SELKIES_NATIVE_DISPLAY=${SELKIES_NATIVE_DISPLAY}
+SELKIES_NATIVE_VERSION=${SELKIES_NATIVE_VERSION}
 SELKIES_WEB_PORT=${SELKIES_WEB_PORT}
 SELKIES_TURN_PORT=${SELKIES_TURN_PORT}
 SELKIES_TURN_MIN_PORT=${SELKIES_TURN_MIN_PORT}
@@ -720,7 +745,7 @@ main() {
   apt_install ca-certificates curl
 
   local version acceleration encoder
-  version="${SELKIES_TAG:-$(ubuntu_version)}"
+  version="$(resolve_install_version)"
   acceleration="$(resolve_acceleration)"
   encoder="$(resolve_encoder "$acceleration")"
 

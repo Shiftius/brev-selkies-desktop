@@ -433,11 +433,20 @@ Section "Device"
     Option "VirtualHeads" "1"
 EndSection
 
+Section "Monitor"
+    Identifier "Monitor0"
+    Option "DPMS" "false"
+EndSection
+
 Section "Screen"
     Identifier "Screen0"
     Device "Device0"
+    Monitor "Monitor0"
     DefaultDepth 24
     Option "AllowEmptyInitialConfiguration" "true"
+    Option "MetaModes" "${SELKIES_DISPLAY_WIDTH}x${SELKIES_DISPLAY_HEIGHT} +0+0"
+    Option "UseEdidDpi" "False"
+    Option "DPI" "96 x 96"
     SubSection "Display"
         Depth 24
         Virtual ${SELKIES_DISPLAY_WIDTH} ${SELKIES_DISPLAY_HEIGHT}
@@ -691,6 +700,26 @@ fi
 until [[ -S "/tmp/.X11-unix/X${DISPLAY#*:}" ]]; do
   sleep 0.5
 done
+
+if [[ "${SELKIES_NATIVE_X_SERVER}" == "nvidia" ]] && command -v xrandr >/dev/null 2>&1; then
+  desired_mode="${SELKIES_DISPLAY_WIDTH}x${SELKIES_DISPLAY_HEIGHT}"
+  output_name=""
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    output_name="$(xrandr --query 2>/dev/null | awk '/ connected/{print $1; exit}' || true)"
+    [[ -n "${output_name}" ]] && break
+    sleep 0.5
+  done
+  if [[ -n "${output_name}" ]]; then
+    if xrandr --query 2>/dev/null | awk -v out="${output_name}" -v mode="${desired_mode}" '
+      $1 == out { in_output = 1; next }
+      in_output && /^[^[:space:]]/ { in_output = 0 }
+      in_output && $1 == mode { found = 1 }
+      END { exit(found ? 0 : 1) }
+    '; then
+      xrandr --output "${output_name}" --mode "${desired_mode}" --pos 0x0 --primary >/dev/null 2>&1 || true
+    fi
+  fi
+fi
 
 exec runuser -u "${SELKIES_NATIVE_USER}" -- /usr/local/bin/brev-selkies-user-session
 EOF

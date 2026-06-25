@@ -47,9 +47,11 @@ export SELKIES_HOST_DOCKER=0
 
 `SELKIES_ACCELERATION` controls encode/runtime behavior:
 
-- `auto`, default: use NVIDIA hardware acceleration only when the GPU and NVIDIA container runtime are both healthy; otherwise use software acceleration.
-- `hardware`: require NVIDIA GPU/container-runtime readiness, run Docker with `--gpus all`, default `SELKIES_ENCODER=nvh264enc`, and use the NVIDIA GLX desktop image.
+- `auto`, default: use NVIDIA hardware acceleration when required GPU prerequisites are healthy; otherwise use software acceleration.
+- `hardware`: require NVIDIA GPU readiness, default `SELKIES_ENCODER=nvh264enc`, and use the NVIDIA GLX desktop image for container mode.
 - `software`: do not request Docker GPU access, default `SELKIES_ENCODER=x264enc`, and use the NVIDIA EGL desktop image for its software fallback path.
+
+In container mode, hardware also requires a healthy NVIDIA container runtime and runs Docker with `--gpus all`. In native mode, hardware requires an NVIDIA-backed Xorg display; the script installs or verifies the matching NVIDIA Xorg driver before choosing hardware mode.
 
 `SELKIES_MODE` controls the browser transport:
 
@@ -108,7 +110,7 @@ Native mode downloads the latest `selkies-project/selkies` portable release by d
 export SELKIES_NATIVE_VERSION=1.6.2
 ```
 
-For hardware acceleration, native mode uses an NVIDIA-backed Xorg display by default instead of `Xvfb`, so browser workloads such as WebGL can use the GPU. Override the display server only when troubleshooting:
+For hardware acceleration, native mode uses an NVIDIA-backed Xorg display by default instead of `Xvfb`, so browser workloads such as WebGL can use the GPU. Native hardware mode now refuses to run on `Xvfb`; if NVIDIA Xorg cannot be prepared, the script exits instead of starting a misleading software-rendered desktop with a hardware encoder. Override the display server only when troubleshooting:
 
 ```bash
 export SELKIES_NATIVE_X_SERVER=auto

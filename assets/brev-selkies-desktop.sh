@@ -240,6 +240,34 @@ nvidia_xorg_ready() {
     && [[ -r /usr/lib/xorg/modules/drivers/nvidia_drv.so ]]
 }
 
+nvidia_driver_major() {
+  local version
+  version="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader,nounits 2>/dev/null | head -n 1)"
+  [[ "$version" =~ ^[0-9]+ ]] || return 1
+  printf '%s\n' "${BASH_REMATCH[0]}"
+}
+
+ensure_nvidia_xorg_driver() {
+  local major package
+
+  nvidia_gpu_ready || die "Native hardware acceleration requires a healthy NVIDIA GPU"
+  command -v Xorg >/dev/null 2>&1 || die "Native hardware acceleration requires Xorg"
+  if [[ -r /usr/lib/xorg/modules/drivers/nvidia_drv.so ]]; then
+    return 0
+  fi
+
+  major="$(nvidia_driver_major)" || die "Could not determine NVIDIA driver major version for Xorg driver install"
+  for package in "xserver-xorg-video-nvidia-${major}" "xserver-xorg-video-nvidia-${major}-server"; do
+    if apt-cache policy "$package" 2>/dev/null | awk '/Candidate:/ && $2 != "(none)" { found = 1 } END { exit(found ? 0 : 1) }'; then
+      log "Installing NVIDIA Xorg driver package for native hardware mode: ${package}"
+      apt_install "$package"
+      break
+    fi
+  done
+
+  nvidia_xorg_ready || die "Native hardware acceleration requires the NVIDIA Xorg driver at /usr/lib/xorg/modules/drivers/nvidia_drv.so"
+}
+
 nvidia_xorg_bus_id() {
   local pci domain bus slot func
   pci="$(nvidia-smi --query-gpu=pci.bus_id --format=csv,noheader,nounits 2>/dev/null | head -n 1)"
@@ -407,7 +435,8 @@ resolve_native_x_server() {
       printf '%s\n' xvfb
       ;;
     auto)
-      if [[ "$acceleration" == "hardware" ]] && nvidia_xorg_ready; then
+      if [[ "$acceleration" == "hardware" ]]; then
+        nvidia_xorg_ready || die "Native hardware acceleration requires NVIDIA Xorg; refusing to run hardware mode on Xvfb"
         printf '%s\n' nvidia
       else
         printf '%s\n' xvfb
@@ -590,23 +619,26 @@ install_native_desktop() {
   fi
   id "$SELKIES_NATIVE_USER" >/dev/null 2>&1 || die "SELKIES_NATIVE_USER '${SELKIES_NATIVE_USER}' does not exist"
   native_group="$(id -gn "$SELKIES_NATIVE_USER")"
-  native_x_server="$(resolve_native_x_server "$acceleration")"
   turn_password="$(resolve_turn_password)"
   SELKIES_TURN_PASSWORD="$turn_password"
 
   log "Installing native Selkies host desktop for user ${SELKIES_NATIVE_USER}"
   log "Native mode installs host XFCE, portable Selkies-GStreamer, coturn, and systemd services."
   log "Native mode leaves Docker on the Brev host; users are not inside a desktop container."
-  log "Native X server requested: ${SELKIES_NATIVE_X_SERVER}; resolved: ${native_x_server}"
   apt_install \
     jq tar gzip ca-certificates curl openssl coturn \
     dbus-x11 xfce4 xfce4-terminal xterm \
     libpulse0 pulseaudio wayland-protocols libwayland-dev libwayland-egl1 \
     x11-utils x11-xkb-utils x11-xserver-utils xserver-xorg-core \
     libx11-xcb1 libxcb-dri3-0 libxkbcommon0 libxdamage1 libxfixes3 \
-    libxv1 libxtst6 libxext6 xvfb
+    libxv1 libxtst6 libxext6 xvfb mesa-utils
   install_firefox_deb
   ensure_docker
+  if [[ "$acceleration" == "hardware" ]]; then
+    ensure_nvidia_xorg_driver
+  fi
+  native_x_server="$(resolve_native_x_server "$acceleration")"
+  log "Native X server requested: ${SELKIES_NATIVE_X_SERVER}; resolved: ${native_x_server}"
 
   log "Downloading Selkies-GStreamer portable release v${version}"
   rm -rf "$SELKIES_NATIVE_DIR"

@@ -31,7 +31,7 @@ curl -fsSL "https://raw.githubusercontent.com/Shiftius/brev-selkies-desktop/main
 `SELKIES_DEPLOYMENT` controls where the desktop runs:
 
 - `container`, default: run the Selkies all-in-one desktop image.
-- `native`: experimental host install that runs XFCE, Selkies-GStreamer, coturn, and Docker directly on the Brev host with systemd services.
+- `native`: host install that runs an Ubuntu GNOME desktop, Selkies-GStreamer, coturn, and Docker directly on the Brev host with systemd services.
 
 Container deployment also enables host Docker access by default:
 
@@ -104,6 +104,18 @@ export SELKIES_MODE=webrtc
 
 Native mode installs `coturn` and Firefox on the host and uses the same default Launchable ports. It intentionally avoids the all-in-one Selkies desktop container so Docker commands inside the streamed desktop operate on the Brev host naturally. Firefox is installed from Mozilla's apt repository so the desktop gets a real `.deb` browser instead of Ubuntu's snap transition package.
 
+Native mode defaults to the familiar Ubuntu GNOME desktop with Yaru styling and the left dock:
+
+```bash
+export SELKIES_NATIVE_DESKTOP=ubuntu
+```
+
+The previous lightweight desktop remains available when install size or simplicity matters more than appearance:
+
+```bash
+export SELKIES_NATIVE_DESKTOP=xfce
+```
+
 Native mode downloads the latest `selkies-project/selkies` portable release by default. Pin it when testing a specific Selkies release:
 
 ```bash
@@ -165,6 +177,8 @@ docker exec brev-selkies-desktop tail -n 200 /tmp/selkies-gstreamer-entrypoint.l
 ```
 
 Messages such as `create_relay_ioa_sockets: no available ports` or `ALLOCATE processed, error 508: Cannot create socket` mean the exposed TURN relay range is too small. Expose the full default range, `47998-48015/udp`, and rerun the Launchable.
+
+Selkies WebRTC is intended for one active browser session per desktop. Opening the same remote desktop from multiple browsers or users at the same time can disconnect or take over the existing session. Treat multi-user collaboration as unsupported for this Launchable, similar to the earlier NV Streamer desktop path.
 
 ## References
 

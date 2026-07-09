@@ -20,6 +20,7 @@ SELKIES_NATIVE_DISPLAY="${SELKIES_NATIVE_DISPLAY:-:99}"
 SELKIES_NATIVE_DIR="${SELKIES_NATIVE_DIR:-/opt/selkies-gstreamer}"
 SELKIES_NATIVE_VERSION="${SELKIES_NATIVE_VERSION:-}"
 SELKIES_NATIVE_X_SERVER="${SELKIES_NATIVE_X_SERVER:-auto}"
+SELKIES_NATIVE_DESKTOP="${SELKIES_NATIVE_DESKTOP:-ubuntu}"
 SELKIES_TURN_REALM="${SELKIES_TURN_REALM:-brev-selkies-desktop}"
 SELKIES_TURN_USERNAME="${SELKIES_TURN_USERNAME:-selkies}"
 SELKIES_TURN_PASSWORD="${SELKIES_TURN_PASSWORD:-}"
@@ -61,9 +62,9 @@ Install a Selkies browser desktop on Brev.
 
 Core settings:
   SELKIES_ACCELERATION=auto|hardware|software
-    auto chooses hardware when a healthy NVIDIA GPU and NVIDIA container runtime
-    are available; otherwise software.
-    hardware uses nvh264enc and Docker --gpus all.
+    auto chooses hardware when required NVIDIA prerequisites are available;
+    otherwise software.
+    hardware uses nvh264enc and Docker --gpus all in container mode.
     software uses x264enc and does not request Docker GPU access.
   SELKIES_DEPLOYMENT=container|native
     container runs the Selkies desktop image. native installs host Selkies,
@@ -77,6 +78,9 @@ Core settings:
   SELKIES_NATIVE_X_SERVER=auto|nvidia|xvfb
     Native deployment only. auto uses NVIDIA Xorg for hardware mode and Xvfb
     for software mode.
+  SELKIES_NATIVE_DESKTOP=ubuntu|xfce
+    Native deployment only. ubuntu starts the familiar Ubuntu GNOME desktop
+    with the left dock. xfce keeps the lighter legacy desktop.
   SELKIES_MODE=webrtc|kasmvnc
     webrtc uses 8080/tcp plus TURN ports.
     kasmvnc uses only 8080/tcp and is the last-resort single-port mode.
@@ -151,6 +155,10 @@ validate_config() {
   case "$SELKIES_NATIVE_X_SERVER" in
     auto|nvidia|xvfb) ;;
     *) die "SELKIES_NATIVE_X_SERVER must be auto, nvidia, or xvfb; got '${SELKIES_NATIVE_X_SERVER}'" ;;
+  esac
+  case "$SELKIES_NATIVE_DESKTOP" in
+    ubuntu|xfce) ;;
+    *) die "SELKIES_NATIVE_DESKTOP must be ubuntu or xfce; got '${SELKIES_NATIVE_DESKTOP}'" ;;
   esac
   [[ "$SELKIES_TURN_MIN_PORT" =~ ^[0-9]+$ ]] || die "SELKIES_TURN_MIN_PORT must be numeric"
   [[ "$SELKIES_TURN_MAX_PORT" =~ ^[0-9]+$ ]] || die "SELKIES_TURN_MAX_PORT must be numeric"
@@ -600,6 +608,7 @@ SELKIES_NATIVE_USER=${SELKIES_NATIVE_USER}
 SELKIES_NATIVE_DISPLAY=${SELKIES_NATIVE_DISPLAY}
 SELKIES_NATIVE_VERSION=${SELKIES_NATIVE_VERSION}
 SELKIES_NATIVE_X_SERVER=${SELKIES_NATIVE_X_SERVER}
+SELKIES_NATIVE_DESKTOP=${SELKIES_NATIVE_DESKTOP}
 SELKIES_WEB_PORT=${SELKIES_WEB_PORT}
 SELKIES_TURN_PORT=${SELKIES_TURN_PORT}
 SELKIES_TURN_MIN_PORT=${SELKIES_TURN_MIN_PORT}
@@ -612,7 +621,7 @@ install_native_desktop() {
   local version="$1"
   local acceleration="$2"
   local encoder="$3"
-  local turn_password native_group native_x_server nvidia_bus_id
+  local turn_password native_group native_x_server nvidia_bus_id native_desktop_packages
 
   if [[ "$SELKIES_MODE" != "webrtc" ]]; then
     die "SELKIES_DEPLOYMENT=native currently supports SELKIES_MODE=webrtc only"
@@ -623,15 +632,30 @@ install_native_desktop() {
   SELKIES_TURN_PASSWORD="$turn_password"
 
   log "Installing native Selkies host desktop for user ${SELKIES_NATIVE_USER}"
-  log "Native mode installs host XFCE, portable Selkies-GStreamer, coturn, and systemd services."
+  log "Native mode installs host desktop packages, portable Selkies-GStreamer, coturn, and systemd services."
   log "Native mode leaves Docker on the Brev host; users are not inside a desktop container."
+  log "Native desktop requested: ${SELKIES_NATIVE_DESKTOP}"
+  native_desktop_packages=(
+    xfce4 xfce4-terminal
+  )
+  if [[ "$SELKIES_NATIVE_DESKTOP" == "ubuntu" ]]; then
+    native_desktop_packages+=(
+      adwaita-icon-theme dconf-cli fonts-ubuntu gnome-control-center
+      gnome-session gnome-settings-daemon gnome-shell
+      gnome-shell-extension-appindicator gnome-shell-extension-desktop-icons-ng
+      gnome-shell-extension-ubuntu-dock gnome-terminal nautilus
+      ubuntu-session yaru-theme-gtk yaru-theme-icon yaru-theme-sound
+      xdg-user-dirs
+    )
+  fi
   apt_install \
     jq tar gzip ca-certificates curl openssl coturn \
-    dbus-x11 xfce4 xfce4-terminal xterm \
+    dbus-x11 xterm \
     libpulse0 pulseaudio wayland-protocols libwayland-dev libwayland-egl1 \
     x11-utils x11-xkb-utils x11-xserver-utils xserver-xorg-core \
     libx11-xcb1 libxcb-dri3-0 libxkbcommon0 libxdamage1 libxfixes3 \
-    libxv1 libxtst6 libxext6 xvfb mesa-utils
+    libxv1 libxtst6 libxext6 xvfb mesa-utils \
+    "${native_desktop_packages[@]}"
   install_firefox_deb
   ensure_docker
   if [[ "$acceleration" == "hardware" ]]; then
@@ -662,6 +686,7 @@ SELKIES_ENCODER=${encoder}
 SELKIES_NATIVE_DISPLAY=${SELKIES_NATIVE_DISPLAY}
 SELKIES_NATIVE_DIR=${SELKIES_NATIVE_DIR}
 SELKIES_NATIVE_X_SERVER=${native_x_server}
+SELKIES_NATIVE_DESKTOP=${SELKIES_NATIVE_DESKTOP}
 SELKIES_ENABLE_BASIC_AUTH=${SELKIES_ENABLE_BASIC_AUTH}
 SELKIES_BASIC_AUTH_USER=${SELKIES_BASIC_AUTH_USER}
 SELKIES_BASIC_AUTH_PASSWORD=${REMOTE_DESKTOP_PASSWORD}
@@ -773,12 +798,49 @@ export PULSE_SERVER="${PULSE_SERVER:-unix:${PULSE_RUNTIME_PATH}/native}"
 mkdir -p "${XDG_RUNTIME_DIR}" "${PULSE_RUNTIME_PATH}"
 chmod 700 "${XDG_RUNTIME_DIR}" "${PULSE_RUNTIME_PATH}" 2>/dev/null || true
 
+if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
+  eval "$(dbus-launch --sh-syntax)"
+fi
+
 pulseaudio -k >/dev/null 2>&1 || true
 pulseaudio --log-target=file:/tmp/pulseaudio_selkies.log --disallow-exit >/dev/null 2>&1 &
 
-if ! pgrep -u "$(id -u)" -f "xfce4-session" >/dev/null 2>&1; then
-  dbus-launch --exit-with-session xfce4-session >/tmp/xfce4_selkies.log 2>&1 &
-fi
+start_ubuntu_desktop() {
+  export DESKTOP_SESSION=ubuntu
+  export GNOME_SHELL_SESSION_MODE=ubuntu
+  export GSETTINGS_SCHEMA_DIR="${GSETTINGS_SCHEMA_DIR:-/usr/share/glib-2.0/schemas}"
+  export XDG_CURRENT_DESKTOP=ubuntu:GNOME
+  export XDG_MENU_PREFIX=gnome-
+  export XDG_SESSION_DESKTOP=ubuntu
+  export XDG_SESSION_TYPE=x11
+
+  xdg-user-dirs-update >/dev/null 2>&1 || true
+  gsettings set org.gnome.desktop.interface gtk-theme 'Yaru' >/dev/null 2>&1 || true
+  gsettings set org.gnome.desktop.interface icon-theme 'Yaru' >/dev/null 2>&1 || true
+  gsettings set org.gnome.desktop.interface cursor-theme 'Yaru' >/dev/null 2>&1 || true
+  gsettings set org.gnome.desktop.session idle-delay 0 >/dev/null 2>&1 || true
+  gsettings set org.gnome.desktop.screensaver lock-enabled false >/dev/null 2>&1 || true
+  gsettings set org.gnome.desktop.notifications show-banners false >/dev/null 2>&1 || true
+  gsettings set org.gnome.shell favorite-apps "['firefox.desktop', 'org.gnome.Terminal.desktop', 'org.gnome.Nautilus.desktop']" >/dev/null 2>&1 || true
+  gsettings set org.gnome.shell enabled-extensions "['ubuntu-dock@ubuntu.com', 'ubuntu-appindicators@ubuntu.com', 'ding@rastersoft.com']" >/dev/null 2>&1 || true
+  gsettings set org.gnome.shell.extensions.dash-to-dock dock-position 'LEFT' >/dev/null 2>&1 || true
+  gsettings set org.gnome.shell.extensions.dash-to-dock extend-height true >/dev/null 2>&1 || true
+
+  if ! pgrep -u "$(id -u)" -f "gnome-session.*ubuntu|gnome-shell" >/dev/null 2>&1; then
+    gnome-session --session=ubuntu >/tmp/gnome_selkies.log 2>&1 &
+  fi
+}
+
+start_xfce_desktop() {
+  if ! pgrep -u "$(id -u)" -f "xfce4-session" >/dev/null 2>&1; then
+    xfce4-session >/tmp/xfce4_selkies.log 2>&1 &
+  fi
+}
+
+case "${SELKIES_NATIVE_DESKTOP}" in
+  ubuntu) start_ubuntu_desktop ;;
+  xfce) start_xfce_desktop ;;
+esac
 
 if [[ -r "${SELKIES_NATIVE_DIR}/gst-env" ]]; then
   # shellcheck disable=SC1091

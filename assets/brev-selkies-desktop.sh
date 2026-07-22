@@ -52,6 +52,11 @@ PUBLIC_IP_URLS="${PUBLIC_IP_URLS:-https://icanhazip.com https://api.ipify.org ht
 HEALTHCHECK_ATTEMPTS="${HEALTHCHECK_ATTEMPTS:-24}"
 HEALTHCHECK_INTERVAL_SECONDS="${HEALTHCHECK_INTERVAL_SECONDS:-5}"
 
+APT_MAX_ATTEMPTS="${APT_MAX_ATTEMPTS:-4}"
+APT_RETRY_DELAY_SECONDS="${APT_RETRY_DELAY_SECONDS:-15}"
+APT_ACQUIRE_RETRIES="${APT_ACQUIRE_RETRIES:-3}"
+APT_LOCK_TIMEOUT_SECONDS="${APT_LOCK_TIMEOUT_SECONDS:-120}"
+
 APT_UPDATED=0
 
 usage() {
@@ -68,7 +73,7 @@ Core settings:
     software uses x264enc and does not request Docker GPU access.
   SELKIES_DEPLOYMENT=container|native
     container runs the Selkies desktop image. native installs host Selkies,
-    coturn, and a host XFCE desktop with systemd services.
+    coturn, and a host Ubuntu GNOME or XFCE desktop with systemd services.
   SELKIES_HOST_DOCKER=1|0
     Container deployment only. When enabled, mount the host Docker socket into
     the desktop so Docker commands from the desktop control the Brev host.
@@ -163,6 +168,10 @@ validate_config() {
   [[ "$SELKIES_TURN_MIN_PORT" =~ ^[0-9]+$ ]] || die "SELKIES_TURN_MIN_PORT must be numeric"
   [[ "$SELKIES_TURN_MAX_PORT" =~ ^[0-9]+$ ]] || die "SELKIES_TURN_MAX_PORT must be numeric"
   [[ "$SELKIES_MIN_RELAY_PORT_COUNT" =~ ^[0-9]+$ ]] || die "SELKIES_MIN_RELAY_PORT_COUNT must be numeric"
+  [[ "$APT_MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] || die "APT_MAX_ATTEMPTS must be a positive integer"
+  [[ "$APT_RETRY_DELAY_SECONDS" =~ ^[0-9]+$ ]] || die "APT_RETRY_DELAY_SECONDS must be a non-negative integer"
+  [[ "$APT_ACQUIRE_RETRIES" =~ ^[0-9]+$ ]] || die "APT_ACQUIRE_RETRIES must be a non-negative integer"
+  [[ "$APT_LOCK_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] || die "APT_LOCK_TIMEOUT_SECONDS must be a non-negative integer"
   if (( SELKIES_TURN_MAX_PORT < SELKIES_TURN_MIN_PORT )); then
     die "SELKIES_TURN_MAX_PORT must be greater than or equal to SELKIES_TURN_MIN_PORT"
   fi
@@ -171,14 +180,63 @@ validate_config() {
   fi
 }
 
-apt_install() {
+apt_update() {
+  local attempt status=1
+
+  for ((attempt = 1; attempt <= APT_MAX_ATTEMPTS; attempt++)); do
+    log "Running: apt-get update (attempt ${attempt}/${APT_MAX_ATTEMPTS})"
+    if apt-get \
+      -o "Acquire::Retries=${APT_ACQUIRE_RETRIES}" \
+      update; then
+      APT_UPDATED=1
+      return 0
+    else
+      status=$?
+    fi
+
+    if (( attempt < APT_MAX_ATTEMPTS )); then
+      log "WARNING: apt-get update failed with status ${status}; retrying in ${APT_RETRY_DELAY_SECONDS}s"
+      sleep "$APT_RETRY_DELAY_SECONDS"
+    fi
+  done
+
+  log "ERROR: apt-get update failed after ${APT_MAX_ATTEMPTS} attempts"
+  return "$status"
+}
+
+apt_install_with_retry() {
+  local attempt status=1
+  local -a apt_args=( "$@" )
+
   if [[ "$APT_UPDATED" == "0" ]]; then
-    log "Running: apt-get update"
-    apt-get update
-    APT_UPDATED=1
+    apt_update
   fi
-  log "Running: apt-get install -y --no-install-recommends $*"
-  apt-get install -y --no-install-recommends "$@"
+
+  for ((attempt = 1; attempt <= APT_MAX_ATTEMPTS; attempt++)); do
+    log "Running: apt-get install ${apt_args[*]} (attempt ${attempt}/${APT_MAX_ATTEMPTS})"
+    if DEBIAN_FRONTEND=noninteractive apt-get \
+      -o "Acquire::Retries=${APT_ACQUIRE_RETRIES}" \
+      -o "DPkg::Lock::Timeout=${APT_LOCK_TIMEOUT_SECONDS}" \
+      install "${apt_args[@]}"; then
+      return 0
+    else
+      status=$?
+    fi
+
+    if (( attempt < APT_MAX_ATTEMPTS )); then
+      log "WARNING: apt-get install failed with status ${status}; refreshing package indexes and retrying in ${APT_RETRY_DELAY_SECONDS}s"
+      APT_UPDATED=0
+      sleep "$APT_RETRY_DELAY_SECONDS"
+      apt_update
+    fi
+  done
+
+  log "ERROR: apt-get install failed after ${APT_MAX_ATTEMPTS} attempts"
+  return "$status"
+}
+
+apt_install() {
+  apt_install_with_retry -y --no-install-recommends "$@"
 }
 
 install_firefox_deb() {
@@ -197,11 +255,9 @@ Pin: origin packages.mozilla.org
 Pin-Priority: 1000
 EOF
 
-  log "Running: apt-get update"
-  apt-get update
-  APT_UPDATED=1
-  log "Running: apt-get install -y --allow-downgrades --no-install-recommends firefox"
-  apt-get install -y --allow-downgrades --no-install-recommends firefox
+  APT_UPDATED=0
+  apt_update
+  apt_install_with_retry -y --allow-downgrades --no-install-recommends firefox
 
   if command -v snap >/dev/null 2>&1 && snap list firefox >/dev/null 2>&1; then
     log "Removing Firefox snap now that Mozilla Firefox deb is installed"
@@ -614,6 +670,10 @@ SELKIES_TURN_PORT=${SELKIES_TURN_PORT}
 SELKIES_TURN_MIN_PORT=${SELKIES_TURN_MIN_PORT}
 SELKIES_TURN_MAX_PORT=${SELKIES_TURN_MAX_PORT}
 SELKIES_MIN_RELAY_PORT_COUNT=${SELKIES_MIN_RELAY_PORT_COUNT}
+APT_MAX_ATTEMPTS=${APT_MAX_ATTEMPTS}
+APT_RETRY_DELAY_SECONDS=${APT_RETRY_DELAY_SECONDS}
+APT_ACQUIRE_RETRIES=${APT_ACQUIRE_RETRIES}
+APT_LOCK_TIMEOUT_SECONDS=${APT_LOCK_TIMEOUT_SECONDS}
 EOF
 }
 

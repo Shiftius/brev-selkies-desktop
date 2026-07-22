@@ -122,6 +122,15 @@ Native mode downloads the latest `selkies-project/selkies` portable release by d
 export SELKIES_NATIVE_VERSION=1.6.2
 ```
 
+Package index refreshes and installs use bounded retries so transient Ubuntu mirror errors do not abort the Launchable after one failed download. The defaults are four outer attempts, three apt acquisition retries per attempt, a 15-second delay between attempts, and up to 120 seconds for a competing dpkg lock to clear. Override them only when the environment needs a different startup budget:
+
+```bash
+export APT_MAX_ATTEMPTS=4
+export APT_ACQUIRE_RETRIES=3
+export APT_RETRY_DELAY_SECONDS=15
+export APT_LOCK_TIMEOUT_SECONDS=120
+```
+
 For hardware acceleration, native mode uses an NVIDIA-backed Xorg display by default instead of `Xvfb`, so browser workloads such as WebGL can use the GPU. Native hardware mode now refuses to run on `Xvfb`; if NVIDIA Xorg cannot be prepared, the script exits instead of starting a misleading software-rendered desktop with a hardware encoder. Override the display server only when troubleshooting:
 
 ```bash
